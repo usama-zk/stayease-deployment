@@ -2,7 +2,8 @@ const Booking = require("../models/booking.model");
 const Room = require("../models/room.model");
 const User = require("../models/user.model");
 const Discount = require("../models/discount.model");
-// 1. YOUR EXISTING LOGIC (KEEP AS IS)
+
+// 1. Check Room Availability
 exports.checkAvailability = async (req, res) => {
   try {
     const { roomId, checkIn, checkOut } = req.body;
@@ -12,13 +13,13 @@ exports.checkAvailability = async (req, res) => {
     if (requestedStart >= requestedEnd) {
       return res.status(400).json({
         success: false,
-        error: "Check-out date must be after the check-in date.",
+        message: "Check-out date must be after the check-in date.",
       });
     }
 
     const overlappingBookings = await Booking.find({
       room: roomId,
-      status: { $in: ["pending_payment", "confirmed"] }, // Crucial for manual flow
+      status: { $in: ["pending_payment", "confirmed"] },
       checkInDate: { $lt: requestedEnd },
       checkOutDate: { $gt: requestedStart },
     }).sort({ checkInDate: 1 });
@@ -58,12 +59,14 @@ exports.checkAvailability = async (req, res) => {
       availableBlocks: availableBlocks,
     });
   } catch (error) {
-    res.status(500).json({ success: false, error: "Server error." });
+    console.error("Availability Check Error:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Server error checking availability." });
   }
 };
 
-// 2. NEW LOGIC: SUBMIT BOOKING WITH IMAGE [cite: 26]
-// 2. NEW LOGIC: SUBMIT BOOKING WITH IMAGE
+// 2. Submit Booking With Image
 exports.createBooking = async (req, res) => {
   console.log("=== INCOMING UPLOAD REQUEST ===");
   console.log("REQ.BODY:", req.body);
@@ -79,7 +82,6 @@ exports.createBooking = async (req, res) => {
         .json({ success: false, message: "Receipt image required." });
     }
 
-    // THE FIX: Cloudinary gives us the live URL directly!
     const liveImageUrl = req.file.path;
 
     const newBooking = new Booking({
@@ -88,7 +90,7 @@ exports.createBooking = async (req, res) => {
       checkInDate: new Date(checkIn),
       checkOutDate: new Date(checkOut),
       totalAmount: totalAmount,
-      paymentReceiptUrl: liveImageUrl, // <-- Saving the permanent Cloudinary URL
+      paymentReceiptUrl: liveImageUrl,
       status: "pending_payment",
     });
 
@@ -101,9 +103,7 @@ exports.createBooking = async (req, res) => {
       bookingId: newBooking._id,
     });
   } catch (error) {
-    console.error("=== DATABASE CRASH ===");
-    console.error(error);
-
+    console.error("=== DATABASE CRASH ===", error);
     res.status(500).json({
       success: false,
       message: "Error saving booking.",
@@ -111,7 +111,8 @@ exports.createBooking = async (req, res) => {
     });
   }
 };
-// Get all bookings that need approval for a specific branch
+
+// 3. Get Pending Bookings (Admin/Manager)
 exports.getPendingBookings = async (req, res) => {
   try {
     const managerBranch = req.user.branch;
@@ -123,14 +124,12 @@ exports.getPendingBookings = async (req, res) => {
       })
       .populate("user", "name email");
 
-    // Filter out null rooms
     const filteredBookings = pendingBookings.filter(
       (b) => b && b.room !== null,
     );
 
     res.status(200).json({ success: true, data: filteredBookings });
   } catch (error) {
-    // This will print the exact crash reason to your Node terminal!
     console.error("PENDING API CRASH:", error);
     res
       .status(500)
@@ -138,6 +137,7 @@ exports.getPendingBookings = async (req, res) => {
   }
 };
 
+// 4. Get Confirmed Roster (Admin/Manager)
 exports.getConfirmedRoster = async (req, res) => {
   try {
     const managerBranch = req.user.branch;
@@ -159,10 +159,10 @@ exports.getConfirmedRoster = async (req, res) => {
   }
 };
 
-// Update booking status (Approve/Reject)
+// 5. Update Booking Status (Approve/Reject)
 exports.updateBookingStatus = async (req, res) => {
   try {
-    const { bookingId, status } = req.body; // status: 'confirmed' or 'cancelled'
+    const { bookingId, status } = req.body;
 
     const booking = await Booking.findByIdAndUpdate(
       bookingId,
@@ -172,26 +172,28 @@ exports.updateBookingStatus = async (req, res) => {
 
     res.status(200).json({ success: true, data: booking });
   } catch (error) {
+    console.error("Status Update Error:", error);
     res.status(500).json({ success: false, message: "Update failed." });
   }
 };
+
+// 6. Get Logged-in User's Bookings
 exports.getMyBookings = async (req, res) => {
   try {
-    // Find all bookings for the logged-in user
     const myBookings = await Booking.find({ user: req.user.id })
-      .populate("room") // Get category, price, and branch info
-      .sort({ createdAt: -1 }); // Show newest first
+      .populate("room")
+      .sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      data: myBookings,
-    });
+    res.status(200).json({ success: true, data: myBookings });
   } catch (error) {
+    console.error("My Bookings Error:", error);
     res
       .status(500)
       .json({ success: false, message: "Error fetching your history." });
   }
 };
+
+// 7. Process Booking Cancellation
 exports.processCancellation = async (req, res) => {
   try {
     const { bookingId } = req.params;
@@ -205,15 +207,10 @@ exports.processCancellation = async (req, res) => {
 
     const now = new Date();
     const checkIn = new Date(booking.checkInDate);
-
-    // Calculate difference in milliseconds, then convert to hours
     const diffInMs = checkIn - now;
     const diffInHours = diffInMs / (1000 * 60 * 60);
 
     let refundPercentage = 0;
-    let refundAmount = 0;
-
-    // FIXED: Matching the project statement's 3-day / 2-day policy
     if (diffInHours >= 72) {
       refundPercentage = 100;
     } else if (diffInHours >= 48) {
@@ -222,11 +219,10 @@ exports.processCancellation = async (req, res) => {
       refundPercentage = 0;
     }
 
-    refundAmount = (booking.totalAmount * refundPercentage) / 100;
+    const refundAmount = (booking.totalAmount * refundPercentage) / 100;
 
-    // Update the booking status
     booking.status = "cancelled";
-    booking.refundAmount = refundAmount; // Ensure your Model has this field
+    booking.refundAmount = refundAmount;
     await booking.save();
 
     res.status(200).json({
@@ -246,16 +242,13 @@ exports.processCancellation = async (req, res) => {
   }
 };
 
-// controllers/bookingController.js
-
+// 8. Create Manual Booking (Admin)
 exports.createManualBooking = async (req, res) => {
   try {
     const { roomId, guestName, checkIn, checkOut, totalAmount } = req.body;
-    const managerBranch = req.user.branch; // From Auth Middleware [cite: 28]
+    const managerBranch = req.user.branch;
 
-    // Verify the room belongs to the manager's branch [cite: 5, 8]
     const room = await Room.findById(roomId);
-    // FIXED: Was room.branch
     if (!room || room.branchLocation !== managerBranch) {
       return res
         .status(403)
@@ -263,31 +256,35 @@ exports.createManualBooking = async (req, res) => {
     }
 
     const newBooking = new Booking({
-      user: null, // No app user account for on-call bookings
-      guestName: guestName, // Store name directly for manual entries
+      user: null,
+      guestName: guestName,
       room: roomId,
       checkInDate: new Date(checkIn),
       checkOutDate: new Date(checkOut),
       totalAmount: totalAmount,
-      status: "confirmed", // Automatically confirmed by manager
+      status: "confirmed",
       isManual: true,
     });
 
     await newBooking.save();
     res.status(201).json({ success: true, message: "Manual booking created." });
   } catch (error) {
+    console.error("Manual Booking Error:", error);
     res
       .status(500)
       .json({ success: false, message: "Error creating manual booking." });
   }
 };
+
+// 9. Get Active Discounts
 exports.getActiveDiscounts = async (req, res) => {
   try {
     const discounts = await Discount.find({ isActive: true });
     res.status(200).json({ success: true, data: discounts });
   } catch (error) {
+    console.error("Discounts Fetch Error:", error);
     res
       .status(500)
-      .json({ success: false, message: "Server error fetching discounts" });
+      .json({ success: false, message: "Server error fetching discounts." });
   }
 };

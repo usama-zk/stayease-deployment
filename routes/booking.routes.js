@@ -18,7 +18,27 @@ const {
 } = require("../controllers/booking.controller");
 
 // --- User Routes ---
-router.post("/submit", protect, upload.single("receipt"), createBooking);
+// --- User Routes ---
+// THE FIX: We are wrapping the upload middleware in a custom function so we can catch and read the exact Cloudinary error!
+router.post(
+  "/submit",
+  protect,
+  (req, res, next) => {
+    upload.single("receipt")(req, res, (err) => {
+      if (err) {
+        console.error("🚨 CLOUDINARY/MULTER CRASH:", err);
+        return res.status(500).json({
+          success: false,
+          message: "File upload failed.",
+          exactError: err.message,
+        });
+      }
+      // If upload succeeds, move on to the controller!
+      next();
+    });
+  },
+  createBooking,
+);
 router.get("/my-bookings", protect, getMyBookings);
 router.post("/check-availability", checkAvailability);
 
